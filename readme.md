@@ -4,7 +4,6 @@ This is the backend API for the QuickFood application, a food delivery platform 
 
 ## Project Overview
 
-QuickFood is a Django-based REST API that allows:
 - Restaurant owners to manage their restaurants and menus
 - Customers to browse restaurants, view menus, and place orders
 - Authentication and authorization for different user roles
@@ -68,7 +67,7 @@ The project is organized into the following main apps:
 ## User Roles
 
 The system supports different user roles:
-- **Customer**: Can browse restaurants, place orders
+- **User**: Can browse restaurants, place orders
 - **Restaurant Owner**: Can manage their restaurants, menu items, and orders
 - **Admin**: Has full access to the system
 
@@ -125,10 +124,3 @@ The API uses JWT (JSON Web Token) for authentication. To access protected endpoi
 ## Media Files
 
 Restaurant and menu item images are stored in the `media/` directory and served at `/media/` URL path.
-
-## Development
-
-To run tests:
-```bash
-python manage.py test
-```
