@@ -1,4 +1,4 @@
-# QuickFood Backend
+# QuickFood - Backend
 
 This is the backend API for the QuickFood application, a food delivery platform that connects customers with restaurants.
 
