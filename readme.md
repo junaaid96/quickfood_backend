@@ -109,6 +109,8 @@ python manage.py createsuperuser
 python manage.py runserver
 ```
 
+7. API will be run at http://localhost:8000
+
 ## Authentication
 
 The API uses JWT (JSON Web Token) for authentication. To access protected endpoints:
