@@ -73,7 +73,7 @@ The project is organized into the following main apps:
 ## User Roles
 
 The system supports different user roles:
-- **User**: Can browse restaurants, place orders
+- **User/Customer**: Can browse restaurants, place orders
 - **Restaurant Owner**: Can manage their restaurants, menu items, and orders
 
 ## Setup and Installation
