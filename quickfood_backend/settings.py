@@ -34,6 +34,10 @@ DEBUG = os.getenv('DEBUG', 'False') == 'True'
 
 ALLOWED_HOSTS = ["*", "quickfood-backend-hoi3.onrender.com"]
 
+CSRF_TRUSTED_ORIGINS = [
+    "https://quickfood-backend-hoi3.onrender.com",
+    "http://quickfood-backend-hoi3.onrender.com",
+]
 
 # Application definition
 
