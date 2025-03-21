@@ -2,7 +2,9 @@
 
 This is the backend API for the QuickFood application, a food delivery platform that connects customers with restaurants.
 
-The API is available at https://quickfood-backend-hoi3.onrender.com/
+API DOcumentation: https://documenter.getpostman.com/view/21646395/2sAYkGLekx
+
+Base API is available at https://quickfood-backend-hoi3.onrender.com/
 Frontend repo: https://github.com/junaaid96/quickfood_frontend 
 Frontend live: https://quickfood-frontend.vercel.app/
 
@@ -73,7 +75,6 @@ The project is organized into the following main apps:
 The system supports different user roles:
 - **User**: Can browse restaurants, place orders
 - **Restaurant Owner**: Can manage their restaurants, menu items, and orders
-- **Admin**: Has full access to the system
 
 ## Setup and Installation
 
@@ -109,7 +110,7 @@ python manage.py createsuperuser
 python manage.py runserver
 ```
 
-7. API will be run at http://localhost:8000
+7. Base API will be run at http://localhost:8000
 
 ## Authentication
 
