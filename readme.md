@@ -2,7 +2,7 @@
 
 This is the backend API for the QuickFood application, a food delivery platform that connects customers with restaurants.
 
-API DOcumentation: https://documenter.getpostman.com/view/21646395/2sAYkGLekx
+API Documentation: https://documenter.getpostman.com/view/21646395/2sAYkGLekx
 
 Base API is available at https://quickfood-backend-hoi3.onrender.com/
 Frontend repo: https://github.com/junaaid96/quickfood_frontend 
