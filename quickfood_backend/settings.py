@@ -103,6 +103,9 @@ WSGI_APPLICATION = 'quickfood_backend.wsgi.application'
 #     }
 # }
 
+DB_USER = os.getenv('DB_USER')
+DB_PASSWORD = os.getenv('DB_PASSWORD')
+
 DATABASES = {
     'default': dj_database_url.config(
         default=f"postgresql://{DB_USER}:{DB_PASSWORD}@ep-wild-hall-a10h1gea-pooler.ap-southeast-1.aws.neon.tech/quickfood?sslmode=require",
