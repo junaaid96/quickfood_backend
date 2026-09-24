@@ -143,6 +143,14 @@ python manage.py runserver
 python manage.py test
 ```
 
+## Deployment (Render)
+
+The service runs under gunicorn, with WhiteNoise serving static files.
+
+- **Build Command:** `./build.sh` (installs requirements, runs `collectstatic` and `migrate`)
+- **Start Command:** `gunicorn quickfood_backend.wsgi:application --workers 3 --timeout 60`
+- **Environment:** `SECRET_KEY`, `DB_USER`, `DB_PASSWORD` (or a full `DATABASE_URL`), and `DEBUG=False`
+
 ## Authentication
 
 The API uses JWT (JSON Web Token) for authentication. To access protected endpoints:
@@ -160,3 +168,5 @@ The API uses JWT (JSON Web Token) for authentication. To access protected endpoi
 ## Media Files
 
 Restaurant and menu item images are stored in the `media/` directory and served at `/media/` URL path.
+
+On Render the disk is reset on every deploy, so uploaded images do not persist there, and `/media/` is only served when `DEBUG=True`. Use object storage for production images.
