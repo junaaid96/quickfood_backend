@@ -13,6 +13,7 @@ https://docs.djangoproject.com/en/5.1/ref/settings/
 from pathlib import Path
 from datetime import timedelta
 import os
+import sys
 from dotenv import load_dotenv
 import dj_database_url
 
@@ -27,10 +28,14 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/5.1/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = os.getenv('SECRET_KEY')
-
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.getenv('DEBUG', 'False') == 'True'
+TESTING = 'test' in sys.argv
+
+SECRET_KEY = os.getenv('SECRET_KEY')
+if not SECRET_KEY and (DEBUG or TESTING):
+    # Local development / test runs only. Production must set SECRET_KEY.
+    SECRET_KEY = 'django-insecure-local-dev-key-change-me'
 
 ALLOWED_HOSTS = ["*", "quickfood-backend-hoi3.onrender.com"]
 
@@ -110,10 +115,14 @@ WSGI_APPLICATION = 'quickfood_backend.wsgi.application'
 DB_USER = os.getenv('DB_USER')
 DB_PASSWORD = os.getenv('DB_PASSWORD')
 
+if DB_USER and not TESTING:
+    DEFAULT_DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@ep-wild-hall-a10h1gea-pooler.ap-southeast-1.aws.neon.tech/quickfood?sslmode=require"
+else:
+    # No Postgres credentials: fall back to a local SQLite file for development and tests.
+    DEFAULT_DATABASE_URL = f"sqlite:///{BASE_DIR / 'db.sqlite3'}"
+
 DATABASES = {
-    'default': dj_database_url.config(
-        default=f"postgresql://{DB_USER}:{DB_PASSWORD}@ep-wild-hall-a10h1gea-pooler.ap-southeast-1.aws.neon.tech/quickfood?sslmode=require",
-    )
+    'default': dj_database_url.config(default=DEFAULT_DATABASE_URL, conn_max_age=600),
 }
 
 # Password validation
@@ -173,13 +182,25 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.IsAuthenticated',
     ],
+    'DEFAULT_THROTTLE_CLASSES': [
+        'rest_framework.throttling.AnonRateThrottle',
+        'rest_framework.throttling.UserRateThrottle',
+    ],
+    'DEFAULT_THROTTLE_RATES': {
+        'anon': os.getenv('THROTTLE_ANON', '120/min'),
+        'user': os.getenv('THROTTLE_USER', '600/min'),
+    },
 }
+
+if TESTING:
+    REST_FRAMEWORK['DEFAULT_THROTTLE_CLASSES'] = []
 
 # JWT settings
 SIMPLE_JWT = {
     'ACCESS_TOKEN_LIFETIME': timedelta(days=1),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
     'ROTATE_REFRESH_TOKENS': False,
+    'UPDATE_LAST_LOGIN': True,
     'BLACKLIST_AFTER_ROTATION': True,
     'ALGORITHM': 'HS256',
     'SIGNING_KEY': SECRET_KEY,
