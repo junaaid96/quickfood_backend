@@ -143,6 +143,14 @@ python manage.py runserver
 python manage.py test
 ```
 
+## Deployment (Vercel)
+
+Vercel detects Django from `manage.py`, serves `WSGI_APPLICATION` as a single Vercel Function and runs `collectstatic` automatically. The Python version is pinned in `.python-version`.
+
+- **Environment:** `SECRET_KEY`, `DB_USER`, `DB_PASSWORD` (or a full `DATABASE_URL`), and `DEBUG=False`
+- **Migrations** are not run on Vercel. Run `python manage.py migrate` against the production database when models change.
+- The filesystem is read-only, so uploads go to `/tmp/media` and do not persist. Use object storage for production images.
+
 ## Deployment (Render)
 
 The service runs under gunicorn, with WhiteNoise serving static files.
