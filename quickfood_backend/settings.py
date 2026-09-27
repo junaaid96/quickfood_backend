@@ -37,11 +37,12 @@ if not SECRET_KEY and (DEBUG or TESTING):
     # Local development / test runs only. Production must set SECRET_KEY.
     SECRET_KEY = 'django-insecure-local-dev-key-change-me'
 
-ALLOWED_HOSTS = ["*", "quickfood-backend-hoi3.onrender.com"]
+ALLOWED_HOSTS = ["*", "quickfood-backend-hoi3.onrender.com", ".vercel.app"]
 
 CSRF_TRUSTED_ORIGINS = [
     "https://quickfood-backend-hoi3.onrender.com",
     "http://quickfood-backend-hoi3.onrender.com",
+    "https://*.vercel.app",
 ]
 
 # Application definition
@@ -172,6 +173,9 @@ WHITENOISE_USE_FINDERS = True
 
 MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
+if os.getenv('VERCEL'):
+    # Vercel Functions have a read-only filesystem apart from /tmp.
+    MEDIA_ROOT = '/tmp/media'
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.1/ref/settings/#default-auto-field
