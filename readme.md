@@ -148,8 +148,9 @@ python manage.py test
 Vercel detects Django from `manage.py`, serves `WSGI_APPLICATION` as a single Vercel Function and runs `collectstatic` automatically. The Python version is pinned in `.python-version`.
 
 - **Environment:** `SECRET_KEY`, `DB_USER`, `DB_PASSWORD` (or a full `DATABASE_URL`), and `DEBUG=False`
+- **Media uploads** go to Neon Object Storage (S3-compatible, on the same Neon branch as the database) when `AWS_STORAGE_BUCKET_NAME` is set, together with `AWS_ENDPOINT_URL_S3`, `AWS_REGION`, `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`. The `quickfood-media` bucket is `public_read`, so image URLs are plain, non-expiring links.
 - **Migrations** are not run on Vercel. Run `python manage.py migrate` against the production database when models change.
-- The filesystem is read-only, so uploads go to `/tmp/media` and do not persist. Use object storage for production images.
+- Without a bucket configured, the read-only filesystem means uploads go to `/tmp/media` and do not persist.
 
 ## Deployment (Render)
 
