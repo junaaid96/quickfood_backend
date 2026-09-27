@@ -177,6 +177,28 @@ if os.getenv('VERCEL'):
     # Vercel Functions have a read-only filesystem apart from /tmp.
     MEDIA_ROOT = '/tmp/media'
 
+# Uploaded images go to S3-compatible object storage (Neon Object Storage in production) when a bucket is set.
+AWS_STORAGE_BUCKET_NAME = os.getenv('AWS_STORAGE_BUCKET_NAME')
+if AWS_STORAGE_BUCKET_NAME and not TESTING:
+    STORAGES['default'] = {
+        'BACKEND': 'storages.backends.s3.S3Storage',
+        'OPTIONS': {
+            'bucket_name': AWS_STORAGE_BUCKET_NAME,
+            'endpoint_url': os.getenv('AWS_ENDPOINT_URL_S3'),
+            'region_name': os.getenv('AWS_REGION'),
+            'access_key': os.getenv('AWS_ACCESS_KEY_ID'),
+            'secret_key': os.getenv('AWS_SECRET_ACCESS_KEY'),
+            # Neon supports path-style addressing only and rejects ACL writes.
+            'addressing_style': 'path',
+            'signature_version': 's3v4',
+            'default_acl': None,
+            # The bucket is public_read, so serve plain URLs instead of expiring signed ones.
+            'querystring_auth': False,
+            'file_overwrite': False,
+            'object_parameters': {'CacheControl': 'public, max-age=31536000, immutable'},
+        },
+    }
+
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.1/ref/settings/#default-auto-field
 

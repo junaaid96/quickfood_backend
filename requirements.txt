@@ -8,3 +8,4 @@ psycopg2-binary==2.9.9
 dj-database-url==2.1.0
 gunicorn==23.0.0
 whitenoise==6.9.0
+django-storages[s3]==1.14.6
