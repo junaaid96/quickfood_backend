@@ -1,3 +1,5 @@
+import json
+import os
 from datetime import timedelta
 from decimal import Decimal
 
@@ -213,3 +215,49 @@ class DemoOrdersTests(APITestCase):
         res = self.client.post('/api/accounts/token/', {'username': 'demo_owner', 'password': 'quickfood123'})
         self.assertEqual(res.status_code, 200)
         self.assertTrue(Order.objects.filter(restaurant__owner=owner, status='pending').exists())
+
+
+class RealtimeTests(OrderFlowTests):
+    def setUp(self):
+        super().setUp()
+        from . import realtime
+        self.rt = realtime
+        self.sent = []
+        self._old = realtime.publisher
+        realtime.publisher = lambda ch, name, data: self.sent.append((ch, name, data))
+        os.environ['ABLY_API_KEY'] = 'appid.keyid:secretvalue'
+
+    def tearDown(self):
+        self.rt.publisher = self._old
+        os.environ.pop('ABLY_API_KEY', None)
+
+    def test_token_is_scoped_and_signed(self):
+        self.place()
+        order = Order.objects.get()
+        self.client.force_authenticate(self.customer)
+        res = self.client.get('/api/orders/realtime-token/')
+        self.assertEqual(res.status_code, 200)
+        cap = json.loads(res.data['capability'])
+        self.assertEqual(cap[f'order:{order.id}'], ['subscribe', 'history'])
+        self.assertEqual(cap[f'user:{self.customer.id}'], ['subscribe'])
+        self.assertEqual(res.data['keyName'], 'appid.keyid')
+        self.assertNotIn('secretvalue', json.dumps(res.data))
+        self.client.force_authenticate(self.other_owner)
+        cap = json.loads(self.client.get('/api/orders/realtime-token/').data['capability'])
+        self.assertNotIn(f'order:{order.id}', cap)
+
+    def test_status_change_is_pushed(self):
+        with self.captureOnCommitCallbacks(execute=True):
+            self.place()
+        order = Order.objects.get()
+        self.client.force_authenticate(self.owner)
+        with self.captureOnCommitCallbacks(execute=True):
+            self.client.patch(f'/api/orders/{order.id}/', {'status': 'confirmed'}, format='json')
+        channels = {(c, d['status']) for c, n, d in self.sent}
+        self.assertIn((f'user:{self.customer.id}', 'confirmed'), channels)
+        self.assertIn((f'user:{self.owner.id}', 'pending'), channels)
+
+    def test_disabled_without_key(self):
+        os.environ.pop('ABLY_API_KEY')
+        self.client.force_authenticate(self.customer)
+        self.assertEqual(self.client.get('/api/orders/realtime-token/').status_code, 503)

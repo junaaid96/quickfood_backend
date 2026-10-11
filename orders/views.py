@@ -13,6 +13,7 @@ from restaurants.models import Review
 from restaurants.serializers import MenuItemSerializer
 from restaurants.views import OptionalPagination
 from .models import Order, OrderItem, OrderMessage, PromoCode
+from . import realtime
 from .permissions import IsOrderOwnerOrRestaurantOwner
 from .serializers import (OrderSerializer, OrderMessageSerializer, PromoCodeSerializer, QuoteSerializer,
                           RestaurantSummarySerializer)
@@ -180,6 +181,13 @@ class OrderViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(id__gt=int(since))
         serializer = OrderMessageSerializer(queryset, many=True, context={'request': request})
         return Response(serializer.data, status=status.HTTP_201_CREATED if request.method == 'POST' else 200)
+
+    @action(detail=False, methods=['get', 'post'], url_path='realtime-token')
+    def realtime_token(self, request):
+        """Signed Ably token request scoped to this user's own channels and live orders."""
+        if not realtime.enabled():
+            return Response({'detail': 'Realtime is not configured.'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        return Response(realtime.token_request_for(request.user))
 
     @action(detail=False, methods=['post'])
     def quote(self, request):

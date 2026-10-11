@@ -157,6 +157,8 @@ class Order(models.Model):
             user.save(update_fields=['loyalty_points'])
         self.save()
         OrderStatusEvent.objects.create(order=self, status=new_status, actor=actor, note=note)
+        from .realtime import push_status
+        push_status(self)
 
     @property
     def savings(self):
