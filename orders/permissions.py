@@ -12,5 +12,11 @@ class IsOrderOwnerOrRestaurantOwner(permissions.BasePermission):
         # Check if user is the restaurant owner
         if request.user.role == 'restaurant_owner' and obj.restaurant.owner == request.user:
             return True
+
+        # Riders see orders assigned to them, and unassigned ones they could pick up.
+        if request.user.role == 'rider':
+            if obj.rider_id == request.user.id:
+                return True
+            return obj.rider_id is None and obj.status in obj.RIDER_CLAIMABLE
         
         return False

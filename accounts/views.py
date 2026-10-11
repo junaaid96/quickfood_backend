@@ -2,12 +2,15 @@ from rest_framework import generics, permissions, status, viewsets
 from rest_framework.response import Response
 from rest_framework_simplejwt.views import TokenObtainPairView
 from django.contrib.auth import get_user_model
-from .serializers import UserSerializer, CustomTokenObtainPairSerializer, AddressSerializer
+from rest_framework.exceptions import PermissionDenied
+from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
+from .models import RiderProfile
+from .serializers import UserSerializer, CustomTokenObtainPairSerializer, AddressSerializer, RiderProfileSerializer
 
 User = get_user_model()
 
 # Public demo logins shown on the frontend login page (password is public).
-DEMO_USERNAMES = {'demo_customer', 'demo_owner', 'demo_owner2'}
+DEMO_USERNAMES = {'demo_customer', 'demo_owner', 'demo_owner2', 'demo_rider'}
 
 
 class RegisterView(generics.CreateAPIView):
@@ -62,3 +65,17 @@ class AddressViewSet(viewsets.ModelViewSet):
         # The first saved address becomes the default automatically.
         is_first = not self.request.user.addresses.exists()
         serializer.save(user=self.request.user, is_default=serializer.validated_data.get('is_default') or is_first)
+
+
+class RiderProfileView(generics.RetrieveUpdateAPIView):
+    """The signed-in rider's own profile: vehicle, photo, availability and earnings."""
+    serializer_class = RiderProfileSerializer
+    queryset = RiderProfile.objects.all()
+    permission_classes = [permissions.IsAuthenticated]
+    parser_classes = [JSONParser, MultiPartParser, FormParser]
+
+    def get_object(self):
+        if self.request.user.role != 'rider':
+            raise PermissionDenied("Only delivery riders have a rider profile.")
+        profile, _ = RiderProfile.objects.get_or_create(user=self.request.user)
+        return profile

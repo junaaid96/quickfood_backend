@@ -169,6 +169,7 @@ class OrderSerializer(CheckoutInputMixin, serializers.ModelSerializer):
     review = serializers.SerializerMethodField()
     can_cancel = serializers.SerializerMethodField()
     next_statuses = serializers.SerializerMethodField()
+    rider_details = serializers.SerializerMethodField()
     eta_minutes = serializers.SerializerMethodField()
     restaurant = serializers.PrimaryKeyRelatedField(queryset=Restaurant.objects.all(), required=False)
 
@@ -179,12 +180,12 @@ class OrderSerializer(CheckoutInputMixin, serializers.ModelSerializer):
                   'delivery_address', 'delivery_option', 'delivery_option_label', 'payment_method', 'contact_phone',
                   'notes', 'promo_code', 'use_points', 'points_redeemed', 'points_earned', 'scheduled_for',
                   'estimated_delivery_at', 'delivered_at', 'prep_minutes', 'cancelled_by', 'eta_minutes',
-                  'next_statuses', 'items', 'order_items', 'events', 'review', 'can_cancel',
+                  'next_statuses', 'rider', 'rider_details', 'rider_rating', 'rider_assigned_at', 'items', 'order_items', 'events', 'review', 'can_cancel',
                   'created_at', 'updated_at')
         read_only_fields = ('user', 'status', 'subtotal', 'delivery_fee', 'service_fee', 'discount',
                             'points_discount', 'total_price', 'points_redeemed', 'points_earned',
-                            'estimated_delivery_at', 'delivered_at', 'prep_minutes', 'cancelled_by',
-                            'created_at', 'updated_at')
+                            'estimated_delivery_at', 'delivered_at', 'prep_minutes', 'cancelled_by', 'rider', 'rider_rating',
+                            'rider_assigned_at', 'created_at', 'updated_at')
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
@@ -202,15 +203,41 @@ class OrderSerializer(CheckoutInputMixin, serializers.ModelSerializer):
         request = self.context.get('request')
         return bool(request and obj.user_id == request.user.id and obj.status == 'pending')
 
+    def get_rider_details(self, obj):
+        if not obj.rider_id:
+            return None
+        rider = obj.rider
+        profile = getattr(rider, 'rider_profile', None)
+        photo = None
+        if profile is not None:
+            photo = profile.photo.url if profile.photo else (profile.photo_url or None)
+            request = self.context.get('request')
+            if photo and profile.photo and request:
+                photo = request.build_absolute_uri(photo)
+        from django.db.models import Avg
+        rating = Order.objects.filter(rider=rider, rider_rating__isnull=False).aggregate(r=Avg('rider_rating'))['r']
+        return {
+            'id': rider.id, 'name': rider.get_full_name() or rider.username, 'phone_number': rider.phone_number or '',
+            'vehicle': profile.get_vehicle_display() if profile else '', 'vehicle_plate': profile.vehicle_plate if profile else '',
+            'photo': photo, 'rating': round(float(rating), 1) if rating else None,
+        }
+
     def get_next_statuses(self, obj):
-        """What the restaurant can do next, so the kitchen board never offers an illegal move."""
+        """What this user can do next, so boards never offer an illegal move."""
         request = self.context.get('request')
-        if not request or getattr(request.user, 'role', None) != 'restaurant_owner' or obj.user_id == request.user.id:
+        role = getattr(request.user, 'role', None) if request else None
+        if role == 'rider':
+            if obj.rider_id != request.user.id:
+                return ['claim'] if obj.rider_id is None and obj.status in Order.RIDER_CLAIMABLE else []
+            return {'ready': ['out_for_delivery'], 'out_for_delivery': ['delivered']}.get(obj.status, [])
+        if not request or role != 'restaurant_owner' or obj.user_id == request.user.id:
             return []
         if obj.status in ('delivered', 'cancelled'):
             return []
         flow = Order.STATUS_FLOW
         nxt = flow[flow.index(obj.status) + 1:flow.index(obj.status) + 2]
+        if obj.rider_id and nxt and nxt[0] in ('out_for_delivery', 'delivered'):
+            nxt = []
         return nxt + (['cancelled'] if obj.can_transition_to('cancelled') else [])
 
     def get_eta_minutes(self, obj):

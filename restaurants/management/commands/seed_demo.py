@@ -4,7 +4,7 @@ Populate the database with demo restaurants, menus, customers, orders and review
     python manage.py seed_demo           # create demo data (safe to re-run)
     python manage.py seed_demo --reset   # remove previous demo data first
 
-Demo logins (password: quickfood123): demo_customer, demo_owner
+Demo logins (password: quickfood123): demo_customer, demo_owner, demo_rider
 """
 import random
 from datetime import time, timedelta
@@ -135,7 +135,7 @@ class Command(BaseCommand):
     @transaction.atomic
     def handle(self, *args, **options):
         rng = random.Random(42)
-        demo_usernames = ['demo_owner', 'demo_owner2', 'demo_customer'] + [f'demo_guest{i}' for i in range(1, 7)]
+        demo_usernames = ['demo_owner', 'demo_owner2', 'demo_customer', 'demo_rider'] + [f'demo_guest{i}' for i in range(1, 7)]
         if options['reset']:
             User.objects.filter(username__in=demo_usernames).delete()
             PromoCode.objects.filter(code__in=['WELCOME20', 'FREEDEL', 'SAVE5', 'BIRYANI10']).delete()

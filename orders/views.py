@@ -1,5 +1,6 @@
 from datetime import timedelta
 
+from django.db import transaction
 from django.db.models import Avg, Count, Q, Sum
 from django.db.models.functions import ExtractHour, TruncDate
 from django.utils import timezone
@@ -36,6 +37,15 @@ class OrderViewSet(viewsets.ModelViewSet):
             queryset = Order.objects.filter(restaurant__owner=user)
             if params.get('restaurant'):
                 queryset = queryset.filter(restaurant_id=params['restaurant'])
+        elif user.role == 'rider':
+            if params.get('scope') == 'available' or self.action != 'list':
+                available = Order.objects.filter(rider__isnull=True, status__in=Order.RIDER_CLAIMABLE)
+                if params.get('scope') == 'available':
+                    queryset = available
+                else:
+                    queryset = Order.objects.filter(rider=user) | available
+            else:
+                queryset = Order.objects.filter(rider=user)
         else:
             # Regular users can only see their own orders
             queryset = Order.objects.filter(user=user)
@@ -55,13 +65,18 @@ class OrderViewSet(viewsets.ModelViewSet):
             if parsed:
                 queryset = queryset.filter(updated_at__gt=parsed)
 
-        return queryset.select_related('restaurant__owner', 'user', 'promo_code', 'review').prefetch_related(
+        return queryset.distinct().select_related('restaurant__owner', 'user', 'promo_code', 'review', 'rider__rider_profile').prefetch_related(
             'items__menu_item', 'events')
+
+    def create(self, request, *args, **kwargs):
+        if request.user.role != 'user':
+            raise PermissionDenied("Only customers can place orders.")
+        return super().create(request, *args, **kwargs)
 
     def perform_create(self, serializer):
         # Only customers can create orders
-        if self.request.user.role == 'restaurant_owner':
-            raise PermissionDenied("Restaurant owners cannot place orders. Only customers can place orders.")
+        if self.request.user.role != 'user':
+            raise PermissionDenied("Only customers can place orders.")
 
         serializer.save(user=self.request.user)
 
@@ -79,9 +94,17 @@ class OrderViewSet(viewsets.ModelViewSet):
                 {"status": f"Invalid status. Must be one of: {', '.join(valid_statuses)}"},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        # Only restaurant owners can update status
-        if request.user.role != 'restaurant_owner' or order.restaurant.owner != request.user:
-            raise PermissionDenied("Only the restaurant owner can update order status.")
+        is_owner = request.user.role == 'restaurant_owner' and order.restaurant.owner_id == request.user.id
+        is_rider = request.user.role == 'rider' and order.rider_id == request.user.id
+        if not (is_owner or is_rider):
+            raise PermissionDenied("Only the restaurant or the assigned rider can update order status.")
+        if is_rider and status_value not in ('out_for_delivery', 'delivered'):
+            raise PermissionDenied("Riders can mark an order picked up or delivered.")
+        if is_rider and status_value == 'out_for_delivery' and order.status != 'ready':
+            return Response({"status": "Wait until the kitchen marks the order ready."}, status=status.HTTP_400_BAD_REQUEST)
+        if is_owner and order.rider_id and status_value in ('out_for_delivery', 'delivered'):
+            return Response({"status": "A rider is assigned. They mark pickup and delivery."},
+                            status=status.HTTP_400_BAD_REQUEST)
         if not order.can_transition_to(status_value):
             return Response(
                 {"status": f"Cannot move an order from '{order.get_status_display()}' to '{status_value}'."},
@@ -143,6 +166,40 @@ class OrderViewSet(viewsets.ModelViewSet):
         reason = (request.data.get('reason') or 'Cancelled by customer')[:200]
         order.set_status('cancelled', actor=request.user, note=reason)
         return Response(self.get_serializer(self.get_queryset().get(pk=order.pk)).data)
+
+    @action(detail=True, methods=['post'])
+    def claim(self, request, pk=None):
+        """A rider accepts the pickup. First come, first served."""
+        if request.user.role != 'rider':
+            raise PermissionDenied("Only riders can accept deliveries.")
+        with transaction.atomic():
+            order = Order.objects.select_for_update().get(pk=pk)
+            if order.rider_id and order.rider_id != request.user.id:
+                raise ValidationError({"rider": "Another rider already took this delivery."})
+            if order.status not in Order.RIDER_CLAIMABLE:
+                raise ValidationError({"status": "This order is no longer waiting for a rider."})
+            order.rider = request.user
+            order.rider_assigned_at = timezone.now()
+            order.save(update_fields=['rider', 'rider_assigned_at', 'updated_at'])
+            from accounts.models import RiderProfile
+            RiderProfile.objects.update_or_create(user=request.user, defaults={'is_available': True})
+            realtime.push_status(order, event='order.rider_assigned')
+        return Response(self.get_serializer(self.get_queryset().get(pk=order.pk)).data)
+
+    @action(detail=True, methods=['post'])
+    def rate_rider(self, request, pk=None):
+        order = self.get_object()
+        if order.user_id != request.user.id or order.status != 'delivered' or not order.rider_id:
+            raise ValidationError({"rating": "You can rate the rider once your order is delivered."})
+        try:
+            rating = int(request.data.get('rating'))
+        except (TypeError, ValueError):
+            rating = 0
+        if not 1 <= rating <= 5:
+            raise ValidationError({"rating": "Rating must be 1 to 5."})
+        order.rider_rating = rating
+        order.save(update_fields=['rider_rating', 'updated_at'])
+        return Response(self.get_serializer(order).data)
 
     @action(detail=True, methods=['post'])
     def reorder(self, request, pk=None):
