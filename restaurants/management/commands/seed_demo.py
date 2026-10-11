@@ -159,7 +159,10 @@ class Command(BaseCommand):
                   for i, name in enumerate(['Nadia', 'Omar', 'Lena', 'Arif', 'Tom', 'Priya'], start=1)]
 
         if Restaurant.objects.filter(owner__in=[owner, owner2]).exists():
-            self.stdout.write(self.style.WARNING('Demo data already present. Use --reset to rebuild.'))
+            from orders.demo import refresh_demo_orders
+            made = refresh_demo_orders()
+            self.stdout.write(self.style.WARNING(
+                f'Demo data already present ({made} live demo orders refreshed). Use --reset to rebuild.'))
             return
 
         restaurants = []
@@ -239,6 +242,9 @@ class Command(BaseCommand):
             e = OrderStatusEvent.objects.create(order=live, status=status, actor=r.owner)
             OrderStatusEvent.objects.filter(pk=e.pk).update(created_at=now - timedelta(minutes=ago))
         Order.objects.filter(pk=live.pk).update(created_at=now - timedelta(minutes=14))
+
+        from orders.demo import refresh_demo_orders
+        refresh_demo_orders(force=True)
 
         Favorite.objects.get_or_create(user=customer, restaurant=restaurants[2])
         Favorite.objects.get_or_create(user=customer, restaurant=restaurants[3])

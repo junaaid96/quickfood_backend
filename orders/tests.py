@@ -153,3 +153,63 @@ class OrderFlowTests(APITestCase):
         self.assertEqual(data['kpis']['orders'], 1)
         self.assertEqual(len(data['series']), 7)
         self.assertEqual(data['top_items'][0]['name'], 'Burger')
+
+
+class LifecycleTests(OrderFlowTests):
+    def owner_patch(self, order, **body):
+        self.client.force_authenticate(self.owner)
+        return self.client.patch(f'/api/orders/{order.id}/', body, format='json')
+
+    def test_full_lifecycle_with_ready_step_and_prep_eta(self):
+        self.place()
+        order = Order.objects.get()
+        res = self.owner_patch(order, status='confirmed', prep_minutes=25)
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertEqual(res.data['prep_minutes'], 25)
+        self.assertEqual(res.data['next_statuses'], ['preparing', 'cancelled'])
+        eta = (Order.objects.get().estimated_delivery_at - timezone.now()).total_seconds() / 60
+        self.assertTrue(25 + 15 - 2 <= eta <= 25 + 15 + 1, eta)
+        for step in ('preparing', 'ready', 'out_for_delivery', 'delivered'):
+            res = self.owner_patch(order, status=step)
+            self.assertEqual(res.status_code, 200, res.data)
+        self.assertEqual([e['status'] for e in res.data['events']],
+                         ['pending', 'confirmed', 'preparing', 'ready', 'out_for_delivery', 'delivered'])
+        self.assertIsNone(res.data['eta_minutes'])
+
+    def test_bad_prep_time_and_backwards_moves_rejected(self):
+        self.place()
+        order = Order.objects.get()
+        self.assertEqual(self.owner_patch(order, status='confirmed', prep_minutes=500).status_code, 400)
+        self.owner_patch(order, status='ready')
+        self.assertEqual(self.owner_patch(order, status='preparing').status_code, 400)
+
+    def test_restaurant_reject_marks_cancelled_by(self):
+        self.place()
+        order = Order.objects.get()
+        res = self.owner_patch(order, status='cancelled', note='Too busy right now')
+        self.assertEqual(res.data['cancelled_by'], 'restaurant')
+        self.assertEqual(res.data['events'][-1]['note'], 'Too busy right now')
+
+    def test_customer_sees_no_owner_actions_and_updated_since_filters(self):
+        self.place()
+        self.client.force_authenticate(self.customer)
+        res = self.client.get('/api/orders/')
+        self.assertEqual(res.data[0]['next_statuses'], [])
+        stamp = res.data[0]['updated_at']
+        self.assertEqual(len(self.client.get('/api/orders/', {'updated_since': stamp}).data), 0)
+
+
+class DemoOrdersTests(APITestCase):
+    def test_demo_refresh_lays_out_every_stage(self):
+        from django.core.management import call_command
+        from .demo import refresh_demo_orders
+        call_command('seed_demo', verbosity=0)
+        owner = User.objects.get(username='demo_owner')
+        states = set(Order.objects.filter(restaurant__owner=owner, status__in=Order.ACTIVE_STATUSES)
+                     .values_list('status', flat=True))
+        self.assertEqual(states, set(Order.ACTIVE_STATUSES))
+        self.assertEqual(refresh_demo_orders(), 0)  # board is healthy, nothing to do
+        Order.objects.filter(status__in=Order.ACTIVE_STATUSES).update(status='delivered')
+        res = self.client.post('/api/accounts/token/', {'username': 'demo_owner', 'password': 'quickfood123'})
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(Order.objects.filter(restaurant__owner=owner, status='pending').exists())

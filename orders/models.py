@@ -1,3 +1,4 @@
+from datetime import timedelta
 from decimal import Decimal
 
 from django.conf import settings
@@ -40,16 +41,18 @@ class PromoCode(models.Model):
 
 class Order(models.Model):
     STATUS_CHOICES = (
-        ('pending', 'Pending'),
-        ('confirmed', 'Confirmed'),
+        ('pending', 'Placed'),
+        ('confirmed', 'Accepted'),
         ('preparing', 'Preparing'),
+        ('ready', 'Ready for pickup'),
         ('out_for_delivery', 'Out for Delivery'),
         ('delivered', 'Delivered'),
         ('cancelled', 'Cancelled'),
     )
     # Forward-only lifecycle. Owners may skip steps; nobody can move backwards.
-    STATUS_FLOW = ['pending', 'confirmed', 'preparing', 'out_for_delivery', 'delivered']
-    ACTIVE_STATUSES = ['pending', 'confirmed', 'preparing', 'out_for_delivery']
+    STATUS_FLOW = ['pending', 'confirmed', 'preparing', 'ready', 'out_for_delivery', 'delivered']
+    ACTIVE_STATUSES = ['pending', 'confirmed', 'preparing', 'ready', 'out_for_delivery']
+    CANCELLED_BY = (('customer', 'Customer'), ('restaurant', 'Restaurant'))
 
     DELIVERY_OPTIONS = (
         ('priority', 'Priority'),
@@ -85,6 +88,9 @@ class Order(models.Model):
     scheduled_for = models.DateTimeField(blank=True, null=True)
     estimated_delivery_at = models.DateTimeField(blank=True, null=True)
     delivered_at = models.DateTimeField(blank=True, null=True)
+    # Kitchen's own estimate, set when the order is accepted. Drives the live ETA.
+    prep_minutes = models.PositiveSmallIntegerField(blank=True, null=True)
+    cancelled_by = models.CharField(max_length=20, choices=CANCELLED_BY, blank=True, default='')
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -108,9 +114,36 @@ class Order(models.Model):
             return False
         return self.STATUS_FLOW.index(new_status) > self.STATUS_FLOW.index(self.status)
 
-    def set_status(self, new_status, actor=None, note=''):
+    def travel_minutes(self):
+        from .pricing import DELIVERY_OPTIONS, TRAVEL_MINUTES
+        delta = DELIVERY_OPTIONS.get(self.delivery_option, {}).get('minutes_delta', 0)
+        return max(8, TRAVEL_MINUTES + delta)
+
+    def refresh_eta(self, new_status, now=None):
+        """Re-estimate delivery as the order moves: kitchen time first, then just the ride."""
+        if self.scheduled_for and self.scheduled_for > (now or timezone.now()):
+            return
+        now = now or timezone.now()
+        travel = timedelta(minutes=self.travel_minutes())
+        if new_status in ('confirmed', 'preparing') and self.prep_minutes:
+            started = now
+            if new_status == 'preparing':
+                accepted = self.events.filter(status__in=['confirmed', 'preparing']).order_by('created_at').first()
+                started = accepted.created_at if accepted else now
+            self.estimated_delivery_at = max(started + timedelta(minutes=self.prep_minutes), now) + travel
+        elif new_status == 'ready':
+            self.estimated_delivery_at = now + travel + timedelta(minutes=3)
+        elif new_status == 'out_for_delivery':
+            self.estimated_delivery_at = now + travel
+
+    def set_status(self, new_status, actor=None, note='', prep_minutes=None):
         """Change status, record a timeline event and settle loyalty points on delivery."""
+        if prep_minutes:
+            self.prep_minutes = prep_minutes
+        self.refresh_eta(new_status)
         self.status = new_status
+        if new_status == 'cancelled':
+            self.cancelled_by = 'restaurant' if actor is not None and actor.pk != self.user_id else 'customer'
         if new_status == 'delivered':
             self.delivered_at = timezone.now()
             # 1 point per whole currency unit spent on food.
