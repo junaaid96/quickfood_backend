@@ -58,7 +58,8 @@ def demo_orders_needed(owner):
     """True when visitors have moved most demo orders along and the board looks empty."""
     active = Order.objects.filter(restaurant__owner=owner, status__in=Order.ACTIVE_STATUSES)
     return (active.count() < 4 or not active.filter(status='pending').exists()
-            or not active.filter(status='ready', rider__isnull=True).exists())
+            or not active.filter(status='ready', rider__isnull=True).exists()
+            or not Order.objects.filter(rider__username='demo_rider', status__in=Order.ACTIVE_STATUSES).exists())
 
 
 @transaction.atomic
