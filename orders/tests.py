@@ -261,3 +261,66 @@ class RealtimeTests(OrderFlowTests):
         os.environ.pop('ABLY_API_KEY')
         self.client.force_authenticate(self.customer)
         self.assertEqual(self.client.get('/api/orders/realtime-token/').status_code, 503)
+
+
+class RiderTests(APITestCase):
+    def setUp(self):
+        from django.core.management import call_command
+        call_command('seed_demo', verbosity=0)
+        self.rider = User.objects.get(username='demo_rider')
+        self.owner = User.objects.get(username='demo_owner')
+        self.customer = User.objects.get(username='demo_customer')
+
+    def test_rider_signup_creates_profile(self):
+        res = self.client.post('/api/accounts/register/', {
+            'username': 'r2', 'email': 'r2@x.com', 'password': 'Sup3r-secret-pw', 'first_name': 'R', 'last_name': 'T',
+            'role': 'rider'}, format='json')
+        self.assertEqual(res.status_code, 201, res.data)
+        self.client.force_authenticate(User.objects.get(username='r2'))
+        res = self.client.patch('/api/accounts/rider/', {'vehicle': 'bicycle', 'is_available': True, 'phone_number': '0171'},
+                                format='json')
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertEqual(res.data['vehicle_label'], 'Bicycle')
+        self.assertTrue(res.data['is_available'])
+
+    def test_demo_rider_has_profile_stats(self):
+        self.client.force_authenticate(self.rider)
+        res = self.client.get('/api/accounts/rider/')
+        self.assertGreater(res.data['stats']['deliveries'], 0)
+        self.assertIsNotNone(res.data['stats']['rating'])
+
+    def test_claim_pickup_deliver(self):
+        self.client.force_authenticate(self.rider)
+        available = self.client.get('/api/orders/', {'scope': 'available'}).data
+        ready = [o for o in available if o['status'] == 'ready']
+        self.assertTrue(ready)
+        oid = ready[0]['id']
+        self.assertEqual(ready[0]['next_statuses'], ['claim'])
+        res = self.client.post(f'/api/orders/{oid}/claim/')
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertEqual(res.data['next_statuses'], ['out_for_delivery'])
+        self.assertEqual(self.client.patch(f'/api/orders/{oid}/', {'status': 'out_for_delivery'}, format='json').status_code, 200)
+        # the restaurant can't close a rider's delivery
+        self.client.force_authenticate(self.owner)
+        self.assertEqual(self.client.patch(f'/api/orders/{oid}/', {'status': 'delivered'}, format='json').status_code, 400)
+        self.client.force_authenticate(self.rider)
+        res = self.client.patch(f'/api/orders/{oid}/', {'status': 'delivered'}, format='json')
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data['rider_details']['name'], 'Karim Hossain')
+
+    def test_second_rider_cannot_take_claimed_order_and_riders_cannot_order(self):
+        other = User.objects.create_user('r3', 'r3@x.com', 'x', role='rider')
+        self.client.force_authenticate(self.rider)
+        oid = [o for o in self.client.get('/api/orders/', {'scope': 'available'}).data if o['status'] == 'ready'][0]['id']
+        self.client.post(f'/api/orders/{oid}/claim/')
+        self.client.force_authenticate(other)
+        self.assertEqual(self.client.post(f'/api/orders/{oid}/claim/').status_code, 400)
+        self.assertEqual(self.client.post('/api/orders/', {}, format='json').status_code, 403)
+
+    def test_customer_rates_rider(self):
+        order = Order.objects.filter(rider=self.rider, status='out_for_delivery', user=self.customer).first()
+        self.client.force_authenticate(self.rider)
+        self.client.patch(f'/api/orders/{order.id}/', {'status': 'delivered'}, format='json')
+        self.client.force_authenticate(self.customer)
+        res = self.client.post(f'/api/orders/{order.id}/rate_rider/', {'rating': 5}, format='json')
+        self.assertEqual(res.data['rider_rating'], 5)

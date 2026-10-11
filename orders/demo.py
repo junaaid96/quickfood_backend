@@ -16,24 +16,49 @@ from .pricing import build_quote
 User = get_user_model()
 
 DEMO_NOTE = 'Demo order'
-# (customer username or None for a guest, status, minutes since placed, prep minutes)
+# (customer username or None for a guest, status, minutes since placed, prep minutes, assigned to demo rider)
 PLAN = [
-    ('demo_customer', 'out_for_delivery', 26, 15),
-    ('demo_customer', 'preparing', 9, 18),
-    (None, 'pending', 2, None),
-    (None, 'pending', 6, None),
-    (None, 'confirmed', 5, 20),
-    (None, 'preparing', 12, 15),
-    (None, 'ready', 19, 15),
-    (None, 'out_for_delivery', 24, 12),
+    ('demo_customer', 'out_for_delivery', 26, 15, True),
+    ('demo_customer', 'preparing', 9, 18, False),
+    (None, 'pending', 2, None, False),
+    (None, 'pending', 6, None, False),
+    (None, 'confirmed', 5, 20, False),
+    (None, 'preparing', 12, 15, True),
+    (None, 'ready', 19, 15, False),
+    (None, 'ready', 17, 12, False),
+    (None, 'out_for_delivery', 24, 12, False),
 ]
+RIDER_PHOTO = 'https://images.unsplash.com/photo-1633332755192-727a05c4013d?auto=format&fit=crop&w=400&q=70'
+
+
+def ensure_demo_rider():
+    from accounts.models import RiderProfile
+    rider, _ = User.objects.get_or_create(username='demo_rider', defaults={
+        'role': 'rider', 'first_name': 'Karim', 'last_name': 'Hossain', 'email': 'demo_rider@quickfood.demo',
+        'phone_number': '+8801700000020'})
+    rider.role = 'rider'
+    rider.set_password('quickfood123')
+    rider.is_staff = rider.is_superuser = False
+    rider.save()
+    RiderProfile.objects.get_or_create(user=rider, defaults={
+        'vehicle': 'motorbike', 'vehicle_plate': 'DHA-METRO-11-2345', 'photo_url': RIDER_PHOTO, 'is_available': True})
+    # Give the demo rider a delivery history so ratings and earnings have something to show.
+    if not Order.objects.filter(rider=rider, status='delivered').exists():
+        rng = random.Random(7)
+        past = list(Order.objects.filter(status='delivered', rider__isnull=True).order_by('-created_at')[:28])
+        for order in past:
+            Order.objects.filter(pk=order.pk).update(
+                rider=rider, rider_assigned_at=order.created_at,
+                rider_rating=rng.choices([5, 4, 3, None], weights=[60, 25, 5, 10])[0])
+    return rider
 STEPS = ['pending', 'confirmed', 'preparing', 'ready', 'out_for_delivery']
 
 
 def demo_orders_needed(owner):
     """True when visitors have moved most demo orders along and the board looks empty."""
     active = Order.objects.filter(restaurant__owner=owner, status__in=Order.ACTIVE_STATUSES)
-    return active.count() < 4 or not active.filter(status='pending').exists()
+    return (active.count() < 4 or not active.filter(status='pending').exists()
+            or not active.filter(status='ready', rider__isnull=True).exists())
 
 
 @transaction.atomic
@@ -42,6 +67,7 @@ def refresh_demo_orders(force=False):
     customer = User.objects.filter(username='demo_customer').first()
     if not owner or not customer:
         return 0
+    rider = ensure_demo_rider()
     if not force and not demo_orders_needed(owner):
         return 0
     restaurants = list(owner.restaurants.prefetch_related('menu_items'))
@@ -52,14 +78,15 @@ def refresh_demo_orders(force=False):
     # Retire the previous batch of demo orders that are still open, then lay out a fresh one.
     stale = Order.objects.filter(restaurant__owner=owner, status__in=Order.ACTIVE_STATUSES)
     stale_customer = Order.objects.filter(user=customer, status__in=Order.ACTIVE_STATUSES)
-    for order in list(stale) + list(stale_customer.exclude(pk__in=stale)):
+    stale_rider = Order.objects.filter(rider=rider, status__in=Order.ACTIVE_STATUSES)
+    for order in set(stale) | set(stale_customer) | set(stale_rider):
         Order.objects.filter(pk=order.pk).update(status='delivered', delivered_at=timezone.now())
         OrderStatusEvent.objects.create(order=order, status='delivered', note='Demo refresh')
 
     rng = random.Random()
     now = timezone.now()
     created = 0
-    for username, state, ago, prep in PLAN:
+    for username, state, ago, prep, with_rider in PLAN:
         buyer = customer if username else rng.choice(guests)
         r = rng.choice(restaurants)
         items = [i for i in r.menu_items.all() if i.is_available]
@@ -75,6 +102,7 @@ def refresh_demo_orders(force=False):
             delivery_address=buyer.address or 'Road 11, Banani, Dhaka', delivery_option=option,
             contact_phone=buyer.phone_number or '', prep_minutes=prep,
             payment_method=rng.choice(['cash', 'card']),
+            rider=rider if with_rider else None, rider_assigned_at=now - timedelta(minutes=ago // 2) if with_rider else None,
         )
         OrderItem.objects.bulk_create([OrderItem(order=order, menu_item=i, quantity=q, price=i.price)
                                        for i, q in lines])

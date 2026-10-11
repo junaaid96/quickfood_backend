@@ -7,6 +7,7 @@ class User(AbstractUser):
     ROLE_CHOICES = (
         ('user', 'User'),
         ('restaurant_owner', 'Restaurant Owner'),
+        ('rider', 'Delivery Rider'),
     )
 
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, default='user')
@@ -16,6 +17,10 @@ class User(AbstractUser):
 
     def __str__(self):
         return self.username
+
+    @property
+    def is_rider(self):
+        return self.role == 'rider'
 
     @property
     def is_restaurant_owner(self):
@@ -65,3 +70,24 @@ class Address(models.Model):
         super().save(*args, **kwargs)
         if self.is_default:
             Address.objects.filter(user=self.user).exclude(pk=self.pk).update(is_default=False)
+
+
+class RiderProfile(models.Model):
+    """Delivery rider details. Stats (deliveries, earnings, rating) are computed from orders."""
+    VEHICLES = (
+        ('motorbike', 'Motorbike'),
+        ('bicycle', 'Bicycle'),
+        ('scooter', 'Scooter'),
+        ('car', 'Car'),
+        ('on_foot', 'On foot'),
+    )
+    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='rider_profile')
+    vehicle = models.CharField(max_length=20, choices=VEHICLES, default='motorbike')
+    vehicle_plate = models.CharField(max_length=20, blank=True, default='')
+    photo = models.ImageField(upload_to='riders/', blank=True, null=True)
+    photo_url = models.URLField(blank=True, default='')
+    is_available = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"Rider {self.user.username}"

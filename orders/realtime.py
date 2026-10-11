@@ -24,6 +24,7 @@ from django.db import transaction
 log = logging.getLogger(__name__)
 TOKEN_TTL_MS = 60 * 60 * 1000
 MAX_ORDER_CHANNELS = 40
+RIDERS_CHANNEL = 'riders'  # broadcast: an order is waiting for a rider
 
 
 def api_key():
@@ -48,6 +49,10 @@ def capability_for(user):
     cap = {user_channel(user.id): ['subscribe']}
     if user.role == 'restaurant_owner':
         ids = Order.objects.filter(restaurant__owner=user, status__in=Order.ACTIVE_STATUSES).values_list('id', flat=True)
+        ops = ['publish', 'subscribe', 'presence']
+    elif user.role == 'rider':
+        cap[RIDERS_CHANNEL] = ['subscribe']
+        ids = Order.objects.filter(rider=user, status__in=Order.ACTIVE_STATUSES).values_list('id', flat=True)
         ops = ['publish', 'subscribe', 'presence']
     else:
         ids = Order.objects.filter(user=user, status__in=Order.ACTIVE_STATUSES).values_list('id', flat=True)
@@ -93,7 +98,7 @@ def publish(channel, name, data):
         log.warning('ably publish failed: %s', exc)
 
 
-def push_status(order):
+def push_status(order, event='order.status'):
     """Tell the customer and the restaurant that an order moved, after the transaction commits."""
     payload = {
         'id': order.id,
@@ -102,12 +107,18 @@ def push_status(order):
         'restaurant': order.restaurant.name,
         'estimated_delivery_at': order.estimated_delivery_at.isoformat() if order.estimated_delivery_at else None,
         'updated_at': order.updated_at.isoformat() if order.updated_at else None,
+        'rider': order.rider_id,
+        'event': event,
     }
-    targets = {order.user_id, order.restaurant.owner_id}
+    targets = {order.user_id, order.restaurant.owner_id} | ({order.rider_id} if order.rider_id else set())
 
     def send():
         for user_id in targets:
             publish(user_channel(user_id), 'order.status', payload)
         publish(order_channel(order.id), 'order.status', payload)
+        if order.rider_id is None and order.status in order.RIDER_CLAIMABLE:
+            publish(RIDERS_CHANNEL, 'order.available', payload)
+        elif event == 'order.rider_assigned':
+            publish(RIDERS_CHANNEL, 'order.taken', payload)
 
     transaction.on_commit(send)

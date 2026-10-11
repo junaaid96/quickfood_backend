@@ -91,6 +91,10 @@ class Order(models.Model):
     # Kitchen's own estimate, set when the order is accepted. Drives the live ETA.
     prep_minutes = models.PositiveSmallIntegerField(blank=True, null=True)
     cancelled_by = models.CharField(max_length=20, choices=CANCELLED_BY, blank=True, default='')
+    rider = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, blank=True, null=True,
+                              related_name='deliveries')
+    rider_assigned_at = models.DateTimeField(blank=True, null=True)
+    rider_rating = models.PositiveSmallIntegerField(blank=True, null=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -104,6 +108,8 @@ class Order(models.Model):
 
     def __str__(self):
         return f"Order #{self.id} - {self.user.username}"
+
+    RIDER_CLAIMABLE = ['confirmed', 'preparing', 'ready']
 
     def can_transition_to(self, new_status):
         if self.status in ('delivered', 'cancelled'):
