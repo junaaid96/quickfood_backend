@@ -40,3 +40,18 @@ class AccountTests(APITestCase):
         self.client.post('/api/accounts/addresses/', {'label': 'Work', 'line': '2 Office Rd', 'is_default': True})
         addresses = self.client.get('/api/accounts/addresses/').data
         self.assertEqual([a['label'] for a in addresses if a['is_default']], ['Work'])
+
+
+class DemoAccountProtectionTests(APITestCase):
+    def setUp(self):
+        from django.core.management import call_command
+        call_command('seed_demo', verbosity=0)
+        call_command('seed_demo', verbosity=0)
+
+    def test_demo_login_and_locked_credentials(self):
+        res = self.client.post('/api/accounts/token/', {'username': 'demo_customer', 'password': 'quickfood123'}, format='json')
+        self.assertEqual(res.status_code, 200, res.content)
+        self.client.credentials(HTTP_AUTHORIZATION='Bearer ' + res.data['access'])
+        self.assertEqual(self.client.patch('/api/accounts/profile/', {'password': 'hacked123!'}, format='json').status_code, 403)
+        self.assertEqual(self.client.patch('/api/accounts/profile/', {'email': 'x@y.com'}, format='json').status_code, 403)
+        self.assertEqual(self.client.patch('/api/accounts/profile/', {'first_name': 'Sara'}, format='json').status_code, 200)

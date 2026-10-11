@@ -145,9 +145,10 @@ class Command(BaseCommand):
                 username=username,
                 defaults={'role': role, 'first_name': first, 'last_name': last,
                           'email': f'{username}@quickfood.demo', **extra})
-            if created:
-                u.set_password(PASSWORD)
-                u.save()
+            # Always (re)set the public password so the login-page demo buttons keep working.
+            u.set_password(PASSWORD)
+            u.is_staff = u.is_superuser = False
+            u.save()
             return u
 
         owner = user('demo_owner', 'restaurant_owner', 'Rafi', 'Ahmed', phone_number='+8801700000001')
