@@ -19,6 +19,17 @@ class RegisterView(generics.CreateAPIView):
 class CustomTokenObtainPairView(TokenObtainPairView):
     serializer_class = CustomTokenObtainPairSerializer
 
+    def post(self, request, *args, **kwargs):
+        response = super().post(request, *args, **kwargs)
+        # Demo visitors move orders along; top the board back up so every stage stays visible.
+        if response.status_code == 200 and request.data.get('username') in DEMO_USERNAMES:
+            try:
+                from orders.demo import refresh_demo_orders
+                refresh_demo_orders()
+            except Exception:  # never block a login on demo housekeeping
+                pass
+        return response
+
 
 class UserProfileView(generics.RetrieveUpdateAPIView):
     serializer_class = UserSerializer

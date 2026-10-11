@@ -168,6 +168,8 @@ class OrderSerializer(CheckoutInputMixin, serializers.ModelSerializer):
     promo_code = serializers.CharField(required=False, allow_blank=True)
     review = serializers.SerializerMethodField()
     can_cancel = serializers.SerializerMethodField()
+    next_statuses = serializers.SerializerMethodField()
+    eta_minutes = serializers.SerializerMethodField()
     restaurant = serializers.PrimaryKeyRelatedField(queryset=Restaurant.objects.all(), required=False)
 
     class Meta:
@@ -176,11 +178,13 @@ class OrderSerializer(CheckoutInputMixin, serializers.ModelSerializer):
                   'subtotal', 'delivery_fee', 'service_fee', 'discount', 'points_discount', 'tip', 'total_price',
                   'delivery_address', 'delivery_option', 'delivery_option_label', 'payment_method', 'contact_phone',
                   'notes', 'promo_code', 'use_points', 'points_redeemed', 'points_earned', 'scheduled_for',
-                  'estimated_delivery_at', 'delivered_at', 'items', 'order_items', 'events', 'review', 'can_cancel',
+                  'estimated_delivery_at', 'delivered_at', 'prep_minutes', 'cancelled_by', 'eta_minutes',
+                  'next_statuses', 'items', 'order_items', 'events', 'review', 'can_cancel',
                   'created_at', 'updated_at')
         read_only_fields = ('user', 'status', 'subtotal', 'delivery_fee', 'service_fee', 'discount',
                             'points_discount', 'total_price', 'points_redeemed', 'points_earned',
-                            'estimated_delivery_at', 'delivered_at', 'created_at', 'updated_at')
+                            'estimated_delivery_at', 'delivered_at', 'prep_minutes', 'cancelled_by',
+                            'created_at', 'updated_at')
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
@@ -197,6 +201,22 @@ class OrderSerializer(CheckoutInputMixin, serializers.ModelSerializer):
     def get_can_cancel(self, obj):
         request = self.context.get('request')
         return bool(request and obj.user_id == request.user.id and obj.status == 'pending')
+
+    def get_next_statuses(self, obj):
+        """What the restaurant can do next, so the kitchen board never offers an illegal move."""
+        request = self.context.get('request')
+        if not request or getattr(request.user, 'role', None) != 'restaurant_owner' or obj.user_id == request.user.id:
+            return []
+        if obj.status in ('delivered', 'cancelled'):
+            return []
+        flow = Order.STATUS_FLOW
+        nxt = flow[flow.index(obj.status) + 1:flow.index(obj.status) + 2]
+        return nxt + (['cancelled'] if obj.can_transition_to('cancelled') else [])
+
+    def get_eta_minutes(self, obj):
+        if obj.status in ('delivered', 'cancelled') or not obj.estimated_delivery_at:
+            return None
+        return max(0, round((obj.estimated_delivery_at - timezone.now()).total_seconds() / 60))
 
     def validate_delivery_address(self, value):
         if not value or not value.strip():

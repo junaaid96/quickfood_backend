@@ -3,6 +3,7 @@ from datetime import timedelta
 from django.db.models import Avg, Count, Q, Sum
 from django.db.models.functions import ExtractHour, TruncDate
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 from rest_framework import viewsets, permissions, status
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied, MethodNotAllowed, ValidationError
@@ -46,6 +47,13 @@ class OrderViewSet(viewsets.ModelViewSet):
         elif state:
             queryset = queryset.filter(status__in=state.split(','))
 
+        # Cheap polling: clients pass the newest updated_at they have seen.
+        since = params.get('updated_since')
+        if since:
+            parsed = parse_datetime(since.replace(' ', '+'))
+            if parsed:
+                queryset = queryset.filter(updated_at__gt=parsed)
+
         return queryset.select_related('restaurant__owner', 'user', 'promo_code', 'review').prefetch_related(
             'items__menu_item', 'events')
 
@@ -63,7 +71,7 @@ class OrderViewSet(viewsets.ModelViewSet):
     def destroy(self, request, *args, **kwargs):
         raise MethodNotAllowed("DELETE", detail="Orders cannot be deleted. Cancel them instead.")
 
-    def _change_status(self, request, order, status_value, note=''):
+    def _change_status(self, request, order, status_value, note='', prep_minutes=None):
         valid_statuses = [choice[0] for choice in Order.STATUS_CHOICES]
         if status_value not in valid_statuses:
             return Response(
@@ -78,7 +86,19 @@ class OrderViewSet(viewsets.ModelViewSet):
                 {"status": f"Cannot move an order from '{order.get_status_display()}' to '{status_value}'."},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        order.set_status(status_value, actor=request.user, note=note[:200])
+        if prep_minutes not in (None, ''):
+            try:
+                prep_minutes = int(prep_minutes)
+            except (TypeError, ValueError):
+                prep_minutes = 0
+            if not 3 <= prep_minutes <= 120:
+                return Response({"prep_minutes": "Prep time must be between 3 and 120 minutes."},
+                                status=status.HTTP_400_BAD_REQUEST)
+        else:
+            prep_minutes = None
+        if status_value == 'confirmed' and not prep_minutes and not order.prep_minutes:
+            prep_minutes = order.restaurant.prep_time_minutes or 20
+        order.set_status(status_value, actor=request.user, note=(note or '')[:200], prep_minutes=prep_minutes)
         order = self.get_queryset().get(pk=order.pk)
         return Response(self.get_serializer(order).data)
 
@@ -91,11 +111,12 @@ class OrderViewSet(viewsets.ModelViewSet):
             )
 
         # Only allow status updates
-        if set(request.data.keys()) - {'status', 'note'}:
+        if set(request.data.keys()) - {'status', 'note', 'prep_minutes'}:
             raise PermissionDenied("Only order status can be updated after placement.")
 
         order = self.get_object()
-        return self._change_status(request, order, request.data.get('status'), request.data.get('note', ''))
+        return self._change_status(request, order, request.data.get('status'), request.data.get('note', ''),
+                                   request.data.get('prep_minutes'))
 
     @action(detail=True, methods=['patch'])
     def update_status(self, request, pk=None):
@@ -107,7 +128,8 @@ class OrderViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
         order = self.get_object()
-        return self._change_status(request, order, status_value, request.data.get('note', ''))
+        return self._change_status(request, order, status_value, request.data.get('note', ''),
+                                   request.data.get('prep_minutes'))
 
     @action(detail=True, methods=['post'])
     def cancel(self, request, pk=None):
