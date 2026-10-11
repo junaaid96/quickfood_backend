@@ -280,6 +280,8 @@ class OrderSerializer(CheckoutInputMixin, serializers.ModelSerializer):
             user.save(update_fields=['loyalty_points'])
         OrderStatusEvent.objects.create(order=order, status='pending', actor=user,
                                         note='Scheduled order placed' if scheduled_for else 'Order placed')
+        from .realtime import push_status
+        push_status(order)
         return order
 
 
