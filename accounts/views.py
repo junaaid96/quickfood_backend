@@ -1,9 +1,13 @@
-from rest_framework import generics, permissions, viewsets
+from rest_framework import generics, permissions, status, viewsets
+from rest_framework.response import Response
 from rest_framework_simplejwt.views import TokenObtainPairView
 from django.contrib.auth import get_user_model
 from .serializers import UserSerializer, CustomTokenObtainPairSerializer, AddressSerializer
 
 User = get_user_model()
+
+# Public demo logins shown on the frontend login page (password is public).
+DEMO_USERNAMES = {'demo_customer', 'demo_owner', 'demo_owner2'}
 
 
 class RegisterView(generics.CreateAPIView):
@@ -25,6 +29,14 @@ class UserProfileView(generics.RetrieveUpdateAPIView):
 
     def get_object(self):
         return self.request.user
+
+    def update(self, request, *args, **kwargs):
+        # Public demo accounts are shared: keep their login details fixed.
+        if request.user.username in DEMO_USERNAMES and any(
+                k in request.data for k in ('username', 'email', 'password', 'role')):
+            return Response({'detail': "Demo accounts can't change username, email, password or role."},
+                            status=status.HTTP_403_FORBIDDEN)
+        return super().update(request, *args, **kwargs)
 
 
 class AddressViewSet(viewsets.ModelViewSet):
