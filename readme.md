@@ -22,6 +22,8 @@ Frontend live: https://quickfood-frontend.vercel.app/
 - **Delivery options**: Priority, Standard, or eco *Wait & Save* (batched, cheaper, lower emissions)
 - **Promo codes, tips, scheduled orders and loyalty points** (earn 1 point per $1, redeem 100 points = $1, tiers Bronze to Platinum)
 - **Order lifecycle**: forward-only statuses with a timestamped timeline, customer self-cancel while pending, one-tap reorder
+- **Online payments via [PaySim BD](https://github.com/junaaid96/paysim-bd)**: bKash tokenized checkout, Nagad and SSLCommerz using the real gateways' request shapes, against an open-source simulator (no real money). Callbacks and the SSLCommerz IPN are verified with the gateway (execute / verify / validator) before an order is marked paid, and amounts are checked. Online orders reach the kitchen only once paid; customers can retry or switch to cash while pending
+- **Refunds**: restaurant owners refund all or part of a payment through each gateway's refund API; refunds are idempotent and capped at the paid amount, and cancelling a paid order refunds it automatically
 - **Order chat** between customer and restaurant
 - **Verified reviews** (only delivered orders), rating breakdowns and owner replies
 - **Favourites** and **saved addresses**
@@ -88,6 +90,15 @@ Frontend live: https://quickfood-frontend.vercel.app/
 - `GET /api/orders/promos/`: Active promo codes
 - `GET /api/orders/analytics/?days=30`: Owner analytics
 
+### Payments (PaySim BD)
+
+- `GET /api/payments/config/`: Enabled gateways and the BDT rate
+- `POST /api/payments/start/`: `order`, `gateway` (`bkash`, `nagad`, `sslcommerz`) → `redirect_url` to the gateway's hosted page
+- `POST /api/payments/pay-on-delivery/`: Switch a pending, unpaid order to cash on delivery
+- `POST /api/payments/check/`: Re-ask the gateway after an interrupted return
+- `POST /api/payments/refund/`: Owner refund: `order`, optional `amount` (blank = everything left), `reason`, `idempotency_key`
+- Gateway returns: `/api/payments/sslcommerz/{success,fail,cancel}/`, `/api/payments/sslcommerz/ipn/`, `/api/payments/bkash/callback/`, `/api/payments/nagad/callback/`
+
 ## User Roles
 
 The system supports different user roles:
@@ -149,7 +160,8 @@ Vercel detects Django from `manage.py`, serves `WSGI_APPLICATION` as a single Ve
 
 - **Environment:** `SECRET_KEY`, `DB_USER`, `DB_PASSWORD` (or a full `DATABASE_URL`), and `DEBUG=False`
 - **Media uploads** go to Neon Object Storage (S3-compatible, on the same Neon branch as the database) when `AWS_STORAGE_BUCKET_NAME` is set, together with `AWS_ENDPOINT_URL_S3`, `AWS_REGION`, `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`. The `quickfood-media` bucket is `public_read`, so image URLs are plain, non-expiring links.
-- **Migrations** are not run on Vercel. Run `python manage.py migrate` against the production database when models change.
+- **Migrations** run in the production build (`vercel_build.sh`: `migrate` then the idempotent `seed_demo`). Preview builds skip them, so a PR never changes the live schema before it is merged.
+- **Payments:** `PAYSIM_BASE_URL` (default `https://paysim-bd-codejborg.vercel.app`), `PAYSIM_BDT_RATE` (dollars to taka, default `120`), `PUBLIC_API_URL` (where gateways call back) and `FRONTEND_URL` (where customers return). Gateway credentials from a PaySim BD workspace: `PAYSIM_SSLCOMMERZ_STORE_ID`, `PAYSIM_SSLCOMMERZ_STORE_PASSWD`, `PAYSIM_BKASH_APP_KEY`, `PAYSIM_BKASH_APP_SECRET`, `PAYSIM_BKASH_USERNAME`, `PAYSIM_BKASH_PASSWORD`, `PAYSIM_NAGAD_MERCHANT_ID`, `PAYSIM_NAGAD_MERCHANT_NUMBER`, `PAYSIM_NAGAD_MERCHANT_PRIVATE_KEY`. A gateway without credentials is simply hidden at checkout.
 - Without a bucket configured, the read-only filesystem means uploads go to `/tmp/media` and do not persist.
 
 ## Deployment (Render)
