@@ -51,13 +51,16 @@ def ensure_demo_rider():
                 rider=rider, rider_assigned_at=order.created_at,
                 rider_rating=rng.choices([5, 4, 3, None], weights=[60, 25, 5, 10])[0])
     return rider
+STALE_HOURS = 3
 STEPS = ['pending', 'confirmed', 'preparing', 'ready', 'out_for_delivery']
 
 
 def demo_orders_needed(owner):
     """True when visitors have moved most demo orders along and the board looks empty."""
     active = Order.objects.filter(restaurant__owner=owner, status__in=Order.ACTIVE_STATUSES)
-    return (active.count() < 4 or not active.filter(status='pending').exists()
+    # Orders left open for hours (e.g. days since the last demo login) make the board look broken.
+    stale_cutoff = timezone.now() - timedelta(hours=STALE_HOURS)
+    return (active.filter(created_at__lt=stale_cutoff).exists() or active.count() < 4 or not active.filter(status='pending').exists()
             or not active.filter(status='ready', rider__isnull=True).exists()
             or not Order.objects.filter(rider__username='demo_rider', status__in=Order.ACTIVE_STATUSES).exists())
 
