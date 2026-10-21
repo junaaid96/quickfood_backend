@@ -62,6 +62,10 @@ class Order(models.Model):
     PAYMENT_METHODS = (
         ('cash', 'Cash on delivery'),
         ('card', 'Card'),
+        # Online, through PaySim BD (simulated gateways, no real money).
+        ('bkash', 'bKash'),
+        ('nagad', 'Nagad'),
+        ('sslcommerz', 'SSLCommerz'),
     )
 
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='orders')
@@ -162,6 +166,12 @@ class Order(models.Model):
             user.loyalty_points += self.points_redeemed
             user.save(update_fields=['loyalty_points'])
         self.save()
+        if new_status == 'cancelled':
+            # Paid online? Give the money back once the cancellation is committed.
+            from django.db import transaction
+            from payments.service import refund_on_cancel
+            order_id = self.pk
+            transaction.on_commit(lambda: refund_on_cancel(order_id))
         OrderStatusEvent.objects.create(order=self, status=new_status, actor=actor, note=note)
         from .realtime import push_status
         push_status(self)

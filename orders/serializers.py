@@ -171,6 +171,7 @@ class OrderSerializer(CheckoutInputMixin, serializers.ModelSerializer):
     next_statuses = serializers.SerializerMethodField()
     rider_details = serializers.SerializerMethodField()
     eta_minutes = serializers.SerializerMethodField()
+    payment = serializers.SerializerMethodField()
     restaurant = serializers.PrimaryKeyRelatedField(queryset=Restaurant.objects.all(), required=False)
 
     class Meta:
@@ -180,7 +181,7 @@ class OrderSerializer(CheckoutInputMixin, serializers.ModelSerializer):
                   'delivery_address', 'delivery_option', 'delivery_option_label', 'payment_method', 'contact_phone',
                   'notes', 'promo_code', 'use_points', 'points_redeemed', 'points_earned', 'scheduled_for',
                   'estimated_delivery_at', 'delivered_at', 'prep_minutes', 'cancelled_by', 'eta_minutes',
-                  'next_statuses', 'rider', 'rider_details', 'rider_rating', 'rider_assigned_at', 'items', 'order_items', 'events', 'review', 'can_cancel',
+                  'next_statuses', 'rider', 'rider_details', 'rider_rating', 'rider_assigned_at', 'items', 'order_items', 'events', 'review', 'can_cancel', 'payment',
                   'created_at', 'updated_at')
         read_only_fields = ('user', 'status', 'subtotal', 'delivery_fee', 'service_fee', 'discount',
                             'points_discount', 'total_price', 'points_redeemed', 'points_earned',
@@ -191,6 +192,16 @@ class OrderSerializer(CheckoutInputMixin, serializers.ModelSerializer):
         data = super().to_representation(instance)
         data['promo_code'] = instance.promo_code.code if instance.promo_code_id else None
         return data
+
+    def get_payment(self, obj):
+        from payments.service import payment_summary
+        return payment_summary(obj)
+
+    def validate_payment_method(self, value):
+        from payments.service import ONLINE_METHODS, enabled_gateways
+        if value in ONLINE_METHODS and value not in enabled_gateways():
+            raise serializers.ValidationError('This payment method is not available right now.')
+        return value
 
     def get_review(self, obj):
         review = getattr(obj, 'review', None)
@@ -307,8 +318,11 @@ class OrderSerializer(CheckoutInputMixin, serializers.ModelSerializer):
             user.save(update_fields=['loyalty_points'])
         OrderStatusEvent.objects.create(order=order, status='pending', actor=user,
                                         note='Scheduled order placed' if scheduled_for else 'Order placed')
-        from .realtime import push_status
-        push_status(order)
+        from payments.service import OFFLINE_METHODS
+        if order.payment_method in OFFLINE_METHODS:
+            # Online orders reach the kitchen once the payment settles (payments.service.mark_paid).
+            from .realtime import push_status
+            push_status(order)
         return order
 
 
