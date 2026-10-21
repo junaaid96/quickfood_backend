@@ -211,6 +211,14 @@ class DemoOrdersTests(APITestCase):
                      .values_list('status', flat=True))
         self.assertEqual(states, set(Order.ACTIVE_STATUSES))
         self.assertEqual(refresh_demo_orders(), 0)  # board is healthy, nothing to do
+        # A board left open for days is refreshed with orders placed minutes ago.
+        from datetime import timedelta
+        from django.utils import timezone
+        Order.objects.filter(status__in=Order.ACTIVE_STATUSES).update(created_at=timezone.now() - timedelta(days=10))
+        self.assertGreater(refresh_demo_orders(), 0)
+        active = Order.objects.filter(restaurant__owner__username='demo_owner', status__in=Order.ACTIVE_STATUSES)
+        self.assertFalse(active.filter(created_at__lt=timezone.now() - timedelta(hours=1)).exists())
+        self.assertEqual(refresh_demo_orders(), 0)
         Order.objects.filter(status__in=Order.ACTIVE_STATUSES).update(status='delivered')
         res = self.client.post('/api/accounts/token/', {'username': 'demo_owner', 'password': 'quickfood123'})
         self.assertEqual(res.status_code, 200)
