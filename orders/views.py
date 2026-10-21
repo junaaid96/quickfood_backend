@@ -16,6 +16,7 @@ from restaurants.views import OptionalPagination
 from .models import Order, OrderItem, OrderMessage, PromoCode
 from . import realtime
 from .permissions import IsOrderOwnerOrRestaurantOwner
+from payments.service import kitchen_visible
 from .serializers import (OrderSerializer, OrderMessageSerializer, PromoCodeSerializer, QuoteSerializer,
                           RestaurantSummarySerializer)
 
@@ -34,12 +35,13 @@ class OrderViewSet(viewsets.ModelViewSet):
 
         # Restaurant owners can see orders for their restaurants
         if user.role == 'restaurant_owner':
-            queryset = Order.objects.filter(restaurant__owner=user)
+            # Unpaid online orders stay with the customer until the payment settles.
+            queryset = kitchen_visible(Order.objects.filter(restaurant__owner=user))
             if params.get('restaurant'):
                 queryset = queryset.filter(restaurant_id=params['restaurant'])
         elif user.role == 'rider':
             if params.get('scope') == 'available' or self.action != 'list':
-                available = Order.objects.filter(rider__isnull=True, status__in=Order.RIDER_CLAIMABLE)
+                available = kitchen_visible(Order.objects.filter(rider__isnull=True, status__in=Order.RIDER_CLAIMABLE))
                 if params.get('scope') == 'available':
                     queryset = available
                 else:
@@ -66,7 +68,7 @@ class OrderViewSet(viewsets.ModelViewSet):
                 queryset = queryset.filter(updated_at__gt=parsed)
 
         return queryset.distinct().select_related('restaurant__owner', 'user', 'promo_code', 'review', 'rider__rider_profile').prefetch_related(
-            'items__menu_item', 'events')
+            'items__menu_item', 'events', 'payments__refunds')
 
     def create(self, request, *args, **kwargs):
         if request.user.role != 'user':
@@ -276,7 +278,7 @@ class OrderViewSet(viewsets.ModelViewSet):
             days = 30
         since = timezone.now() - timedelta(days=days)
 
-        orders = Order.objects.filter(restaurant__owner=user)
+        orders = kitchen_visible(Order.objects.filter(restaurant__owner=user))
         if request.query_params.get('restaurant'):
             orders = orders.filter(restaurant_id=request.query_params['restaurant'])
         active_orders = orders.filter(status__in=Order.ACTIVE_STATUSES).count()
