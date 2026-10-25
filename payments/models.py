@@ -6,8 +6,8 @@ from django.db.models import Sum
 
 
 class Payment(models.Model):
-    """One attempt to pay an order online through PaySim BD (bKash, Nagad or SSLCommerz)."""
-    GATEWAYS = (('bkash', 'bKash'), ('nagad', 'Nagad'), ('sslcommerz', 'SSLCommerz'))
+    """One attempt to pay an order online through PaySim BD (bKash, Nagad, Rocket, Upay or SSLCommerz)."""
+    GATEWAYS = (('bkash', 'bKash'), ('nagad', 'Nagad'), ('rocket', 'Rocket'), ('upay', 'Upay'), ('sslcommerz', 'SSLCommerz'))
     STATUSES = (
         ('initiated', 'Awaiting payment'),
         ('paid', 'Paid'),

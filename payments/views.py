@@ -187,6 +187,39 @@ def nagad_callback(request):
     return _redirect(payment, outcome)
 
 
+@api_view(['GET', 'POST'])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+@throttle_classes([])
+def rocket_return(request):
+    data = request.query_params if request.method == 'GET' else request.data
+    payment = Payment.objects.filter(gateway='rocket', session_id=data.get('trans_id', '')).first()
+    if not payment:
+        return _fallback()
+    try:
+        outcome = service.settle_rocket(payment)
+    except paysim.PaySimError as exc:
+        log.warning('rocket return %s: %s', payment.reference, exc)
+        outcome = 'pending'
+    return _redirect(payment, outcome)
+
+
+@api_view(['GET'])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+@throttle_classes([])
+def upay_callback(request):
+    payment = Payment.objects.filter(gateway='upay', reference=request.query_params.get('invoice_id', '')).first()
+    if not payment:
+        return _fallback()
+    try:
+        outcome = service.settle_upay(payment)
+    except paysim.PaySimError as exc:
+        log.warning('upay callback %s: %s', payment.reference, exc)
+        outcome = 'pending'
+    return _redirect(payment, outcome)
+
+
 @api_view(['POST'])
 @permission_classes([permissions.IsAuthenticated])
 def check(request):
@@ -199,6 +232,10 @@ def check(request):
         try:
             if payment.gateway == 'nagad':
                 service.settle_nagad(payment)
+            elif payment.gateway == 'rocket':
+                service.settle_rocket(payment)
+            elif payment.gateway == 'upay':
+                service.settle_upay(payment)
             elif payment.gateway == 'bkash':
                 data = paysim.BKash.query(payment.session_id)
                 if data.get('transactionStatus') == 'Completed':

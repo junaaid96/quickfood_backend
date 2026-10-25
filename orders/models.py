@@ -65,6 +65,8 @@ class Order(models.Model):
         # Online, through PaySim BD (simulated gateways, no real money).
         ('bkash', 'bKash'),
         ('nagad', 'Nagad'),
+        ('rocket', 'Rocket'),
+        ('upay', 'Upay'),
         ('sslcommerz', 'SSLCommerz'),
     )
 

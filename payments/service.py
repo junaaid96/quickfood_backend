@@ -21,7 +21,7 @@ from . import paysim
 from .models import Payment, Refund
 
 log = logging.getLogger(__name__)
-ONLINE_METHODS = ('bkash', 'nagad', 'sslcommerz')
+ONLINE_METHODS = ('bkash', 'nagad', 'rocket', 'upay', 'sslcommerz')
 OFFLINE_METHODS = ('cash', 'card')
 CENT = Decimal('0.01')
 
@@ -80,7 +80,7 @@ def start_payment(order, gateway, user):
     if order.user_id != user.id:
         raise PaymentError('Only the customer can pay for this order.', 403)
     if gateway not in ONLINE_METHODS:
-        raise PaymentError('Choose bKash, Nagad or SSLCommerz.')
+        raise PaymentError('Choose bKash, Nagad, Rocket, Upay or SSLCommerz.')
     if not paysim.configured(gateway):
         raise PaymentError(f'{dict(Payment.GATEWAYS)[gateway]} is not available right now.', 503)
     with transaction.atomic():
@@ -126,6 +126,11 @@ def _open_session(payment, order, user):
         digits = ''.join(ch for ch in (order.contact_phone or '') if ch.isdigit())[-11:]
         return paysim.BKash.create(reference=payment.reference, amount_bdt=payment.amount_bdt,
                                    payer_reference=digits or f'QF{order.user_id}', callback_url=f'{base}/payments/bkash/callback/')
+    if payment.gateway == 'rocket':
+        return paysim.Rocket.start(reference=payment.reference, amount_bdt=payment.amount_bdt)
+    if payment.gateway == 'upay':
+        return paysim.Upay.start(reference=payment.reference, amount_bdt=payment.amount_bdt,
+                                 redirect_url=f'{base}/payments/upay/callback/')
     return paysim.Nagad.start(reference=payment.reference, amount_bdt=payment.amount_bdt, order_id=order.id,
                               callback_url=f'{base}/payments/nagad/callback/')
 
@@ -256,6 +261,40 @@ def settle_nagad(payment):
     return 'failed'
 
 
+def settle_rocket(payment):
+    if payment.status == 'paid':
+        return 'success'
+    data = paysim.Rocket.result(payment.session_id)
+    result, code = data.get('RESULT', ''), data.get('RESULT_CODE', '')
+    if result == 'OK' and code == '000':
+        mark_paid(payment, trx_id=data.get('RRN') or payment.session_id)
+        return 'success'
+    if result == 'PENDING' or data.get('RESULT_PS') == 'PENDING':
+        return 'pending'
+    if result == 'TIMEOUT':
+        mark_unpaid(payment, 'cancelled', 'Cancelled in Rocket')
+        return 'cancelled'
+    mark_unpaid(payment, 'failed', 'Rocket payment failed')
+    return 'failed'
+
+
+def settle_upay(payment):
+    if payment.status == 'paid':
+        return 'success'
+    data = paysim.Upay.status(payment.reference)
+    status = data.get('status')
+    if status == 'success' and _amount_matches(payment, data.get('amount')) and data.get('txn_id') == payment.reference:
+        mark_paid(payment, trx_id=data.get('trx_id') or '')
+        return 'success'
+    if status == 'pending':
+        return 'pending'
+    if status in ('cancelled', 'expired'):
+        mark_unpaid(payment, 'cancelled', 'Cancelled in Upay')
+        return 'cancelled'
+    mark_unpaid(payment, 'failed', 'Upay payment failed')
+    return 'failed'
+
+
 # --------------------------------------------------------------------------- refunds
 
 def _gateway_ref(key):
@@ -293,6 +332,10 @@ def refund_payment(payment, amount, *, reason, key, actor, automatic=False):
                 result = paysim.SSLCommerz.refund(bank_tran_id=p.trx_id, amount_bdt=value_bdt, remarks=reason, refund_trans_id=ref)
             elif p.gateway == 'bkash':
                 result = paysim.BKash.refund(payment_id=p.session_id, trx_id=p.trx_id, amount_bdt=value_bdt, reason=reason, idempotency_key=ref)
+            elif p.gateway == 'rocket':
+                result = paysim.Rocket.refund(reference=p.reference, amount_bdt=value_bdt, reason=reason, idempotency_key=ref)
+            elif p.gateway == 'upay':
+                result = paysim.Upay.refund(reference=p.reference, amount_bdt=value_bdt)
             else:
                 result = paysim.Nagad.refund(payment_ref_id=p.session_id, original_amount_bdt=p.amount_bdt,
                                              amount_bdt=value_bdt, reason=reason, reference_no=ref)
