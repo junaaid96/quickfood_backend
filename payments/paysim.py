@@ -1,6 +1,6 @@
 """
 Thin clients for PaySim BD (https://github.com/junaaid96/paysim-bd), an open-source simulator of
-SSLCommerz, bKash and Nagad. The request shapes are the real gateways' shapes, so swapping the base
+SSLCommerz, bKash, Nagad, Rocket (DBBL) and Upay. The request shapes are the real gateways' shapes, so swapping the base
 URL and credentials for a real sandbox is the only change a production integration would need.
 
 All amounts sent to the gateways are BDT strings with two decimals.
@@ -270,7 +270,143 @@ class Nagad:
         return {'ok': ok, 'refund_id': opened.get('cancelTrxId', ''), 'error': '' if ok else opened.get('message') or 'Refund declined'}
 
 
-GATEWAYS = {'sslcommerz': SSLCommerz, 'bkash': BKash, 'nagad': Nagad}
+# --------------------------------------------------------------------------- Rocket (DBBL)
+# DBBL's e-commerce SOAP service (WSDL: https://ecomtest.dutchbanglabank.com/ecomws/dbblecomtxn?wsdl):
+# getransid opens a session, the customer pays on /ecomm2/ClientHandler and comes back to the
+# store's return_url with ?trans_id=, then getresultrocket says how it ended. DBBL has no refund
+# API, so refunds go through the PaySim dashboard API (in production: the DBBL merchant panel).
+
+def _xml_escape(value):
+    return (str(value).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;'))
+
+
+class Rocket:
+    name = 'rocket'
+    CARD_TYPE = '6'
+
+    @staticmethod
+    def creds():
+        return setting('PAYSIM_ROCKET_USERID'), setting('PAYSIM_ROCKET_PWD')
+
+    @classmethod
+    def _soap(cls, operation, fields):
+        userid, pwd = cls.creds()
+        body = ''.join(f'<{k}>{_xml_escape(v)}</{k}>' for k, v in {'userid': userid, 'pwd': pwd, **fields}.items())
+        envelope = ('<?xml version="1.0" encoding="UTF-8"?><soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" '
+                    f'xmlns:ws="http://ecom.dbbl/"><soapenv:Body><ws:{operation}>{body}</ws:{operation}></soapenv:Body></soapenv:Envelope>')
+        req = urllib.request.Request(base_url() + '/ecomws/dbblecomtxn', data=envelope.encode(), method='POST',
+                                     headers={'Content-Type': 'text/xml; charset=utf-8', 'SOAPAction': ''})
+        try:
+            with urllib.request.urlopen(req, timeout=TIMEOUT) as res:
+                raw = res.read().decode()
+        except urllib.error.HTTPError as exc:
+            raise PaySimError(f'Rocket answered HTTP {exc.code}') from exc
+        except (urllib.error.URLError, TimeoutError) as exc:
+            raise PaySimError('Payment gateway is unreachable right now. Please try again.') from exc
+        start, end = raw.find('<return>'), raw.find('</return>')
+        if start < 0 or end < 0:
+            raise PaySimError('Unexpected Rocket response.')
+        text = raw[start + 8:end].replace('&gt;', '>').replace('&lt;', '<').replace('&amp;', '&')
+        if text.lower().startswith('error'):
+            raise PaySimError(text[:200])
+        lines = {}
+        for line in text.splitlines():
+            key, sep, value = line.partition(':')
+            if sep:
+                lines[key.strip()] = value.strip()
+        return lines
+
+    @classmethod
+    def start(cls, *, reference, amount_bdt, client_ip=''):
+        paisa = int((Decimal(amount_bdt) * 100).quantize(Decimal('1')))
+        data = cls._soap('getransid', {'amount': paisa, 'cardtype': cls.CARD_TYPE, 'txnrefnum': reference,
+                                       'clientip': client_ip or '127.0.0.1'})
+        trans_id = data.get('TRANSACTION_ID')
+        if not trans_id:
+            raise PaySimError('Could not start the Rocket payment.')
+        url = f'{base_url()}/ecomm2/ClientHandler?' + urllib.parse.urlencode({'card_type': cls.CARD_TYPE, 'trans_id': trans_id})
+        return {'redirect_url': url, 'session_id': trans_id}
+
+    @classmethod
+    def result(cls, trans_id):
+        return cls._soap('getresultrocket', {'transid': trans_id, 'clientip': ''})
+
+    @classmethod
+    def refund(cls, *, reference, amount_bdt, reason, idempotency_key):
+        txns = _request('GET', '/api/txns', params={'gateway': 'rocket', 'limit': 200})
+        txn = next((t for t in txns if t.get('gatewayTxnId') == reference), None)
+        if not txn:
+            raise PaySimError('Rocket transaction not found in PaySim.')
+        try:
+            body = _request('POST', f"/api/txns/{txn['id']}/refunds", json_body={
+                'amountMinor': int((Decimal(amount_bdt) * 100).quantize(Decimal('1'))),
+                'reason': (reason or 'Refund')[:200], 'idempotencyKey': idempotency_key[:64]})
+        except PaySimError as exc:
+            return {'ok': False, 'refund_id': '', 'error': str(exc)}
+        refund = body.get('refund') or {}
+        ok = refund.get('status') == 'completed'
+        return {'ok': ok, 'refund_id': refund.get('refundId', ''), 'error': '' if ok else 'Refund declined'}
+
+
+# --------------------------------------------------------------------------- Upay
+# Upay PGW API v4.1.0 as described by community docs (https://bdpaygate.github.io/docs/upay):
+# merchant-auth -> merchant-payment-init -> hosted page -> redirect_url?status=&invoice_id=,
+# confirmed with single-payment-status; refunds via the bulk refund endpoint.
+
+class Upay:
+    name = 'upay'
+    _token = {'value': '', 'expires': 0.0}
+    _lock = threading.Lock()
+
+    @classmethod
+    def _auth(cls, fresh=False):
+        with cls._lock:
+            if not fresh and cls._token['value'] and cls._token['expires'] > time.time():
+                return cls._token['value']
+            data = _request('POST', '/payment/merchant-auth/', json_body={
+                'merchant_id': setting('PAYSIM_UPAY_MERCHANT_ID'), 'merchant_key': setting('PAYSIM_UPAY_MERCHANT_KEY')})
+            token = (data.get('data') or {}).get('token')
+            if not token:
+                raise PaySimError(data.get('message') or 'Upay login failed.')
+            cls._token.update(value=token, expires=time.time() + 600)
+            return token
+
+    @classmethod
+    def _call(cls, method, path, body=None):
+        try:
+            return _request(method, path, json_body=body, headers={'Authorization': f'UPAY {cls._auth()}'})
+        except PaySimError as exc:
+            if (getattr(exc, 'body', {}) or {}).get('code') != 'UNA4001':
+                raise
+            return _request(method, path, json_body=body, headers={'Authorization': f'UPAY {cls._auth(fresh=True)}'})
+
+    @classmethod
+    def start(cls, *, reference, amount_bdt, redirect_url):
+        data = cls._call('POST', '/payment/merchant-payment-init/', {
+            'date': datetime.now(dt_timezone.utc).strftime('%Y-%m-%d'), 'txn_id': reference, 'invoice_id': reference,
+            'amount': bdt(amount_bdt), 'redirect_url': redirect_url, 'merchant_id': setting('PAYSIM_UPAY_MERCHANT_ID'),
+            'merchant_name': 'QuickFood',
+        })
+        info = data.get('data') or {}
+        if data.get('code') != 'MPIS2002' or not info.get('gateway_url'):
+            raise PaySimError(data.get('message') or 'Could not start the Upay payment.')
+        return {'redirect_url': info['gateway_url'], 'session_id': info.get('session_id', '')}
+
+    @classmethod
+    def status(cls, reference):
+        return (cls._call('GET', f'/payment/single-payment-status/{urllib.parse.quote(reference)}/').get('data') or {})
+
+    @classmethod
+    def refund(cls, *, reference, amount_bdt):
+        data = cls._call('POST', '/payment/bulk/refund/', [{'txn_id': reference, 'refund_amount': bdt(amount_bdt)}])
+        info = data.get('data') or {}
+        if reference in (info.get('success_list') or []):
+            return {'ok': True, 'refund_id': f'UPR-{reference}-{int(time.time() * 1000)}', 'error': ''}
+        failed = (info.get('failed_list') or {}).get(reference) or {}
+        return {'ok': False, 'refund_id': '', 'error': (failed.get('en') if isinstance(failed, dict) else str(failed)) or data.get('message') or 'Refund declined'}
+
+
+GATEWAYS = {'sslcommerz': SSLCommerz, 'bkash': BKash, 'nagad': Nagad, 'rocket': Rocket, 'upay': Upay}
 
 
 def configured(gateway):
@@ -280,4 +416,8 @@ def configured(gateway):
         return all(setting(k) for k in ('PAYSIM_BKASH_APP_KEY', 'PAYSIM_BKASH_APP_SECRET', 'PAYSIM_BKASH_USERNAME', 'PAYSIM_BKASH_PASSWORD'))
     if gateway == 'nagad':
         return bool(setting('PAYSIM_NAGAD_MERCHANT_ID') and setting('PAYSIM_NAGAD_MERCHANT_PRIVATE_KEY'))
+    if gateway == 'rocket':
+        return bool(setting('PAYSIM_ROCKET_USERID') and setting('PAYSIM_ROCKET_PWD'))
+    if gateway == 'upay':
+        return bool(setting('PAYSIM_UPAY_MERCHANT_ID') and setting('PAYSIM_UPAY_MERCHANT_KEY'))
     return False

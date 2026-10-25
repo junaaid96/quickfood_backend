@@ -15,6 +15,7 @@ ENV = {
     'PAYSIM_SSLCOMMERZ_STORE_ID': 'qf', 'PAYSIM_SSLCOMMERZ_STORE_PASSWD': 'pw',
     'PAYSIM_BKASH_APP_KEY': 'k', 'PAYSIM_BKASH_APP_SECRET': 's', 'PAYSIM_BKASH_USERNAME': 'u', 'PAYSIM_BKASH_PASSWORD': 'p',
     'PAYSIM_NAGAD_MERCHANT_ID': 'm', 'PAYSIM_NAGAD_MERCHANT_PRIVATE_KEY': 'x', 'PAYSIM_BDT_RATE': '120',
+    'PAYSIM_ROCKET_USERID': 'r', 'PAYSIM_ROCKET_PWD': 'rp', 'PAYSIM_UPAY_MERCHANT_ID': 'um', 'PAYSIM_UPAY_MERCHANT_KEY': 'uk',
     'FRONTEND_URL': 'https://front.test', 'PUBLIC_API_URL': 'https://api.test/api',
 }
 
@@ -49,8 +50,8 @@ class PaymentFlowTests(APITestCase):
 
     def start(self, order, gateway, session='S1', url='https://sim.test/pay'):
         self.client.force_authenticate(self.customer)
-        target = {'sslcommerz': 'SSLCommerz', 'bkash': 'BKash', 'nagad': 'Nagad'}[gateway]
-        method = {'sslcommerz': 'init', 'bkash': 'create', 'nagad': 'start'}[gateway]
+        target = {'sslcommerz': 'SSLCommerz', 'bkash': 'BKash', 'nagad': 'Nagad', 'rocket': 'Rocket', 'upay': 'Upay'}[gateway]
+        method = {'sslcommerz': 'init', 'bkash': 'create', 'nagad': 'start', 'rocket': 'start', 'upay': 'start'}[gateway]
         with mock.patch.object(getattr(paysim, target), method, return_value={'redirect_url': url, 'session_id': session}) as m:
             res = self.client.post('/api/payments/start/', {'order': order.id, 'gateway': gateway}, format='json')
         return res, m
@@ -192,6 +193,46 @@ class PaymentFlowTests(APITestCase):
 
     def test_config_lists_configured_gateways(self):
         res = self.client.get('/api/payments/config/')
-        self.assertEqual(res.data['gateways'], ['bkash', 'nagad', 'sslcommerz'])
+        self.assertEqual(res.data['gateways'], ['bkash', 'nagad', 'rocket', 'upay', 'sslcommerz'])
         with mock.patch.dict(os.environ, {'PAYSIM_NAGAD_MERCHANT_PRIVATE_KEY': ''}):
-            self.assertEqual(self.client.get('/api/payments/config/').data['gateways'], ['bkash', 'sslcommerz'])
+            self.assertEqual(self.client.get('/api/payments/config/').data['gateways'], ['bkash', 'rocket', 'upay', 'sslcommerz'])
+
+    def test_rocket_pays_after_getresult_then_refunds(self):
+        order = self.place('rocket')
+        res, _ = self.start(order, 'rocket', 'RTX1')
+        self.assertEqual(res.status_code, 201, res.data)
+        with mock.patch.object(paysim.Rocket, 'result', return_value={'RESULT': 'FAILED', 'RESULT_CODE': '116'}):
+            failed = self.client.get('/api/payments/rocket/return/', {'trans_id': 'RTX1'})
+        self.assertIn('payment=failed', failed['Location'])
+        self.start(order, 'rocket', 'RTX2')
+        with mock.patch.object(paysim.Rocket, 'result', return_value={'RESULT': 'OK', 'RESULT_PS': 'FINISHED', 'RESULT_CODE': '000'}):
+            paid = self.client.post('/api/payments/rocket/return/', {'trans_id': 'RTX2'})
+        self.assertIn('payment=success', paid['Location'])
+        self.assertIn(order.id, self.owner_ids())
+        self.client.force_authenticate(self.owner)
+        with mock.patch.object(paysim.Rocket, 'refund', side_effect=ok_refund) as refund:
+            res = self.client.post('/api/payments/refund/', {'order': order.id, 'amount': '4.00', 'idempotency_key': 'r1'}, format='json')
+        self.assertEqual(res.status_code, 201, res.data)
+        self.assertEqual(refund.call_args.kwargs['amount_bdt'], Decimal('480.00'))
+        self.assertEqual(res.data['order']['payment']['status'], 'partially_refunded')
+
+    def test_upay_checks_status_and_amount_then_refunds_in_full(self):
+        order = self.place('upay')
+        self.start(order, 'upay', 'USESS')
+        payment = Payment.objects.get(order=order)
+        amount = float(order.total_price * 120)
+        with mock.patch.object(paysim.Upay, 'status', return_value={'status': 'success', 'amount': amount - 1, 'txn_id': payment.reference}):
+            bad = self.client.get('/api/payments/upay/callback/', {'invoice_id': payment.reference, 'status': 'successful'})
+        self.assertNotIn('payment=success', bad['Location'])
+        payment = Payment.objects.filter(order=order).order_by('-id').first()
+        if payment.status != 'pending':
+            self.start(order, 'upay', 'USESS2')
+            payment = Payment.objects.filter(order=order).order_by('-id').first()
+        with mock.patch.object(paysim.Upay, 'status', return_value={'status': 'success', 'amount': amount, 'txn_id': payment.reference, 'trx_id': 'UTRX'}):
+            ok = self.client.get('/api/payments/upay/callback/', {'invoice_id': payment.reference, 'status': 'successful'})
+        self.assertIn('payment=success', ok['Location'])
+        self.client.force_authenticate(self.owner)
+        with mock.patch.object(paysim.Upay, 'refund', side_effect=ok_refund):
+            res = self.client.post('/api/payments/refund/', {'order': order.id, 'idempotency_key': 'u1'}, format='json')
+        self.assertEqual(res.status_code, 201, res.data)
+        self.assertEqual(res.data['order']['payment']['status'], 'refunded')
